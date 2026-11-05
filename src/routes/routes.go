@@ -6,10 +6,11 @@ import (
 	"bucket-list-be/src/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-func Setup(db *gorm.DB, cfg config.Config) *gin.Engine {
+func Setup(db *gorm.DB, redisClient *redis.Client, cfg config.Config) *gin.Engine {
 	router := gin.Default()
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -18,8 +19,8 @@ func Setup(db *gorm.DB, cfg config.Config) *gin.Engine {
 	})
 
 	auth := router.Group("/auth")
-	auth.POST("/login", handlers.Login(db))
-	auth.POST("/signup", handlers.Signup(db))
+	auth.POST("/login", handlers.RequestMagicLink(db, redisClient, cfg))
+	auth.POST("/verify", handlers.VerifyMagicLink(db, redisClient))
 	auth.POST("/logout", handlers.Logout(db))
 
 	protected := router.Group("/")

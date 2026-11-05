@@ -16,7 +16,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
-	router := routes.Setup(db, cfg)
+	redisClient, err := database.ConnectRedis(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("redis: %v", err)
+	}
+	defer redisClient.Close()
+
+	router := routes.Setup(db, redisClient, cfg)
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("server: %v", err)
 	}

@@ -11,7 +11,7 @@ type Session struct {
 	ID         uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	UserID     uuid.UUID      `gorm:"type:uuid;not null;index" json:"userId"`
 	TokenHash  string         `gorm:"column:token_hash;type:text;uniqueIndex;not null" json:"-"`
-	ClientType string         `gorm:"type:text;not null" json:"clientType"`
+	ClientType string         `gorm:"type:text;not null;default:'web'" json:"clientType"`
 	DeviceName string         `gorm:"type:text" json:"deviceName"`
 	ExpiresAt  time.Time      `gorm:"not null;index" json:"expiresAt"`
 	RevokedAt  *time.Time     `json:"-"`

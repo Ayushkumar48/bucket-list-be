@@ -8,13 +8,12 @@ import (
 )
 
 type User struct {
-	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Name         string    `gorm:"type:text;not null" json:"name"`
-	Username     string    `gorm:"type:text;uniqueIndex;not null" json:"username"`
-	Email        string    `gorm:"type:text;uniqueIndex;not null" json:"email"`
-	Bio          string    `gorm:"type:text" json:"bio"`
-	AvatarKey    string    `gorm:"type:text" json:"avatarKey"`
-	PasswordHash string    `gorm:"column:password_hash;type:text;not null" json:"-"`
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Email     string    `gorm:"type:text;uniqueIndex;not null" json:"email"`
+	Name      *string   `gorm:"type:text" json:"name,omitempty"`
+	Username  *string   `gorm:"type:text;uniqueIndex" json:"username,omitempty"`
+	Bio       *string   `gorm:"type:text" json:"bio,omitempty"`
+	AvatarKey *string   `gorm:"type:text" json:"avatarKey,omitempty"`
 
 	CreatedAt time.Time      `json:"createdAt"`
 	UpdatedAt time.Time      `json:"updatedAt"`

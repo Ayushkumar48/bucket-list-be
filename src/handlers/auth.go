@@ -1,265 +1,170 @@
 package handlers
 
 import (
+	"bucket-list-be/src/config"
 	"bucket-list-be/src/models"
-	"bucket-list-be/src/utils/schema"
+	"bucket-list-be/src/utils"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"net/http"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
-	"bucket-list-be/src/utils"
-
-	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-const sessionDuration = 30 * 24 * time.Hour
-
-type AuthHandler struct {
-	DB *gorm.DB
-}
-
-func NewAuthHandler(db *gorm.DB) *AuthHandler {
-	return &AuthHandler{DB: db}
-}
-
-type SignupRequest struct {
-	Name     string `json:"name"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
+const (
+	sessionDuration  = 30 * 24 * time.Hour
+	magicLinkTTL     = 10 * time.Minute
+	magicLinkKeyPref = "bucket-list:magic-link:"
+)
 
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email string `json:"email"`
 }
 
-func Signup(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-
-		req, ok := utils.BindJSON[SignupRequest](c)
-		if !ok {
-			return
-		}
-
-		issues := schema.SignupSchema.Validate(&req)
-		if !utils.ValidateZog(c, issues) {
-			return
-		}
-
-		// Check email.
-		_, err := gorm.G[models.User](db).
-			Where("email = ?", req.Email).
-			First(ctx)
-
-		if err == nil {
-			utils.ConflictRequest(c, "An account with this email already exists")
-			return
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			utils.InternalError(c)
-			return
-		}
-
-		// Check username.
-		_, err = gorm.G[models.User](db).
-			Where("username = ?", req.Username).
-			First(ctx)
-
-		if err == nil {
-			utils.ConflictRequest(c, "Username already exists")
-			return
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			utils.InternalError(c)
-			return
-		}
-
-		// Hash password using Argon2id.
-		passwordHash, err := argon2id.CreateHash(
-			req.Password,
-			argon2id.DefaultParams,
-		)
-		if err != nil {
-			utils.InternalError(c)
-			return
-		}
-
-		user := models.User{
-			Name:         req.Name,
-			Username:     req.Username,
-			Email:        req.Email,
-			PasswordHash: passwordHash,
-		}
-
-		// Create user.
-		err = gorm.G[models.User](db).Create(ctx, &user)
-		if err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "Username or email already exists",
-				})
-				return
-			}
-
-			utils.InternalError(c)
-			return
-		}
-
-		utils.ResponseOk(c, gin.H{
-			"message":  "Account created successfully",
-			"id":       user.ID,
-			"name":     user.Name,
-			"username": user.Username,
-		})
-	}
+type VerifyMagicLinkRequest struct {
+	Token string `json:"token"`
 }
 
-func Login(db *gorm.DB) gin.HandlerFunc {
+func RequestMagicLink(db *gorm.DB, redisClient *redis.Client, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-
 		req, ok := utils.BindJSON[LoginRequest](c)
 		if !ok {
 			return
 		}
-
-		req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-
-		if req.Email == "" || req.Password == "" {
-			utils.BadRequest(c, "Email and password are required")
+		email := strings.ToLower(strings.TrimSpace(req.Email))
+		if email == "" || !strings.Contains(email, "@") {
+			utils.BadRequest(c, "A valid email is required")
 			return
 		}
 
-		user, err := gorm.G[models.User](db).
-			Where("email = ?", req.Email).
-			First(ctx)
+		ctx := c.Request.Context()
 
+		rawToken, err := randomToken()
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				utils.Unauthorized(c, "Invalid email or password")
-			} else {
-				utils.InternalError(c)
+			utils.InternalError(c)
+			return
+		}
+		key := magicLinkKey(rawToken)
+		if err := redisClient.Set(ctx, key, email, magicLinkTTL).Err(); err != nil {
+			utils.InternalError(c)
+			return
+		}
+
+		link := cfg.MagicLinkURL + "?token=" + url.QueryEscape(rawToken)
+		sender := EmailSender{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword}
+		if err := sender.SendMagicLink(email, link); err != nil {
+			_ = redisClient.Del(ctx, key).Err()
+			utils.InternalError(c)
+			return
+		}
+		utils.ResponseOk(c, gin.H{"message": "If that email can be used, a sign-in link has been sent"})
+	}
+}
+
+func VerifyMagicLink(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		req, ok := utils.BindJSON[VerifyMagicLinkRequest](c)
+		if !ok {
+			return
+		}
+		token := strings.TrimSpace(req.Token)
+		if token == "" {
+			utils.Unauthorized(c, "Invalid or expired magic link")
+			return
+		}
+		ctx := c.Request.Context()
+		// GETDEL atomically reads and deletes the token, making it single-use.
+		email, err := redisClient.GetDel(ctx, magicLinkKey(token)).Result()
+		if errors.Is(err, redis.Nil) {
+			utils.Unauthorized(c, "Invalid or expired magic link")
+			return
+		}
+		if err != nil {
+			utils.InternalError(c)
+			return
+		}
+
+		user, err := gorm.G[models.User](db).Where("email = ?", email).First(ctx)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			user = models.User{Email: email}
+			if err := gorm.G[models.User](db).Create(ctx, &user); err != nil {
+				// Another verification request may have created the same account.
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					user, err = gorm.G[models.User](db).Where("email = ?", email).First(ctx)
+				}
+				if err != nil {
+					utils.InternalError(c)
+					return
+				}
 			}
+		} else if err != nil {
+			utils.InternalError(c)
 			return
 		}
 
-		passwordMatch, err := argon2id.ComparePasswordAndHash(
-			req.Password,
-			user.PasswordHash,
-		)
+		sessionToken, err := randomToken()
 		if err != nil {
 			utils.InternalError(c)
 			return
 		}
-
-		if !passwordMatch {
-			utils.Unauthorized(c, "Invalid email or password")
-			return
-		}
-
-		// Generate a cryptographically secure token.
-		tokenBytes := make([]byte, 32)
-		if _, err := rand.Read(tokenBytes); err != nil {
-			utils.InternalError(c)
-			return
-		}
-
-		token := hex.EncodeToString(tokenBytes)
-
-		// Store only the token hash.
-		tokenHashBytes := sha256.Sum256([]byte(token))
-		tokenHash := hex.EncodeToString(tokenHashBytes[:])
-
 		session := models.Session{
-			UserID:    user.ID,
-			TokenHash: tokenHash,
+			UserID: user.ID, TokenHash: hashToken(sessionToken), ClientType: "web",
 			ExpiresAt: time.Now().UTC().Add(sessionDuration),
 		}
-
 		if err := gorm.G[models.Session](db).Create(ctx, &session); err != nil {
 			utils.InternalError(c)
 			return
 		}
-
-		utils.ResponseOk(c, gin.H{
-			"message":    "Login successful",
-			"token":      token,
-			"token_type": "Bearer",
-			"expires_at": session.ExpiresAt,
-		})
+		utils.ResponseOk(c, gin.H{"message": "Login successful", "token": sessionToken, "token_type": "Bearer", "expires_at": session.ExpiresAt})
 	}
 }
 
 func Logout(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-
 		header := c.GetHeader("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
 			utils.Unauthorized(c, "Missing or invalid authorization token")
 			return
 		}
-
 		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 		if token == "" {
 			utils.Unauthorized(c, "Missing or invalid authorization token")
 			return
 		}
-
-		// Hash the token, since the database stores only its hash.
-		hashBytes := sha256.Sum256([]byte(token))
-		tokenHash := hex.EncodeToString(hashBytes[:])
-
-		// Delete the matching session to revoke the token.
-		result, err := gorm.G[models.Session](db).
-			Where("token_hash = ?", tokenHash).
-			Delete(ctx)
-
+		result, err := gorm.G[models.Session](db).Where("token_hash = ?", hashToken(token)).Delete(c.Request.Context())
 		if err != nil {
 			utils.InternalError(c)
 			return
 		}
-
 		if result == 0 {
 			utils.Unauthorized(c, "Invalid or expired session")
 			return
 		}
-
-		utils.ResponseOk(c, gin.H{
-			"message": "Logout successful",
-		})
+		utils.ResponseOk(c, gin.H{"message": "Logout successful"})
 	}
 }
 
 func Me(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-
 		userID, exists := c.Get("userID")
 		if !exists {
 			utils.Unauthorized(c)
 			return
 		}
-
 		id, ok := userID.(uuid.UUID)
 		if !ok {
 			utils.InternalError(c)
 			return
 		}
-
-		user, err := gorm.G[models.User](db).
-			Where("id = ?", id).
-			First(ctx)
-
+		user, err := gorm.G[models.User](db).Where("id = ?", id).First(c.Request.Context())
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				utils.Unauthorized(c)
@@ -268,7 +173,23 @@ func Me(db *gorm.DB) gin.HandlerFunc {
 			}
 			return
 		}
-
 		utils.ResponseOk(c, user)
 	}
+}
+
+func randomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashToken(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(hash[:])
+}
+
+func magicLinkKey(token string) string {
+	return magicLinkKeyPref + hashToken(token)
 }
