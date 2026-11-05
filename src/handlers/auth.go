@@ -129,17 +129,18 @@ func VerifyMagicLink(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 
 func Logout(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		header := c.GetHeader("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
-			utils.Unauthorized(c, "Missing or invalid authorization token")
+		sessionID, exists := c.Get("sessionID")
+		if !exists {
+			utils.Unauthorized(c, "Missing or invalid session")
 			return
 		}
-		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-		if token == "" {
-			utils.Unauthorized(c, "Missing or invalid authorization token")
+		id, ok := sessionID.(uuid.UUID)
+		if !ok {
+			utils.InternalError(c)
 			return
 		}
-		result, err := gorm.G[models.Session](db).Where("token_hash = ?", hashToken(token)).Delete(c.Request.Context())
+
+		result, err := gorm.G[models.Session](db).Where("id = ?", id).Delete(c.Request.Context())
 		if err != nil {
 			utils.InternalError(c)
 			return

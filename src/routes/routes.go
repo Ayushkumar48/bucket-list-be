@@ -21,12 +21,13 @@ func Setup(db *gorm.DB, redisClient *redis.Client, cfg config.Config) *gin.Engin
 	auth := router.Group("/auth")
 	auth.POST("/login", handlers.RequestMagicLink(db, redisClient, cfg))
 	auth.POST("/verify", handlers.VerifyMagicLink(db, redisClient))
-	auth.POST("/logout", handlers.Logout(db))
 
 	protected := router.Group("/")
 	protected.Use(middleware.AuthRequired(db))
 	{
+		protected.POST("/auth/logout", handlers.Logout(db))
 		protected.GET("/me", handlers.Me(db))
+		protected.PATCH("/onboarding", handlers.Onboarding(db))
 		// protected.POST("/bucket-items", handlers.CreateBucketItem)
 		// protected.GET("/bucket-items", handlers.ListBucketItems)
 	}

@@ -35,7 +35,7 @@ func AuthRequired(db *gorm.DB) gin.HandlerFunc {
 
 		// Only accept sessions that have not expired.
 		session, err := gorm.G[models.Session](db).
-			Where("token_hash = ? AND expires_at > ?", tokenHash, time.Now().UTC()).
+			Where("token_hash = ? AND expires_at > ? AND revoked_at IS NULL", tokenHash, time.Now().UTC()).
 			First(c.Request.Context())
 
 		if err != nil {
@@ -49,6 +49,7 @@ func AuthRequired(db *gorm.DB) gin.HandlerFunc {
 
 		// Make the authenticated user ID available to downstream handlers.
 		c.Set("userID", session.UserID)
+		c.Set("sessionID", session.ID)
 
 		c.Next()
 	}

@@ -46,3 +46,27 @@ var SignupSchema = z.Struct(z.Shape{
 			},
 		}),
 })
+
+var OnboardingSchema = z.Struct(z.Shape{
+	"Name": z.String().
+		Trim().
+		Min(2).
+		Max(100).
+		Required(),
+	"Username": z.String().
+		Trim().
+		Transform(func(value *string, ctx z.Ctx) error {
+			*value = strings.ToLower(*value)
+			return nil
+		}).
+		Min(3).
+		Max(30).
+		Match(
+			regexp.MustCompile(`^[a-z0-9_]+$`),
+			z.Message("Username can contain only lowercase letters, numbers, and underscores"),
+		).
+		Required(),
+	"Bio": z.String().
+		Trim().
+		Max(500),
+})
