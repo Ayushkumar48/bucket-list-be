@@ -1,0 +1,38 @@
+# Go build output
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage output
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Air live reload output
+/tmp/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Dependency directory (uncomment if dependencies are vendored intentionally)
+# /vendor/
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
