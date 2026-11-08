@@ -25,24 +25,12 @@ func Connect(dsn string) (*gorm.DB, error) {
 	if err := sqlDB.Ping(); err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&models.User{}, &models.Session{}); err != nil {
-		return nil, err
-	}
-	// The previous password-based schema made these columns mandatory. Keep
-	// existing profile data, but allow a newly-created magic-link user to have
-	// only an email. Password hashes are no longer used by this application.
-	if err := db.Exec(`
-		ALTER TABLE users ALTER COLUMN name DROP NOT NULL;
-		ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
-		ALTER TABLE users DROP COLUMN IF EXISTS password_hash;
-	`).Error; err != nil {
+	if err := db.AutoMigrate(models.All()...); err != nil {
 		return nil, err
 	}
 	return db, nil
 }
 
-// ConnectRedis creates and verifies a Redis-compatible client, including
-// Dragonfly deployments that expose the Redis protocol.
 func ConnectRedis(redisURL string) (*redis.Client, error) {
 	options, err := redis.ParseURL(redisURL)
 	if err != nil {

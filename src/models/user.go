@@ -14,6 +14,7 @@ type User struct {
 	Username  *string   `gorm:"type:text;uniqueIndex" json:"username,omitempty"`
 	Bio       *string   `gorm:"type:text" json:"bio,omitempty"`
 	AvatarKey *string   `gorm:"type:text" json:"avatarKey,omitempty"`
+	IsPrivate bool      `gorm:"not null;default:false"`
 
 	CreatedAt time.Time      `json:"createdAt"`
 	UpdatedAt time.Time      `json:"updatedAt"`
